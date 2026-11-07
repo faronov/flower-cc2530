@@ -5,6 +5,8 @@
  * two endpoints, a measured sensor cycle and grouped reports. */
 #include "zcl_sensor.h"
 #include "zdo_srv.h"
+#include "join_smoke.h"
+#include "security_counter.h"
 #include <stddef.h>
 #include <string.h>
 
@@ -28,8 +30,28 @@
 #define MODEL 14u
 #define INTERVAL 17u
 #define CHANNEL 18u
+#define TXPOWER 37u
+#define TXMODE 39u
+#define TXMANUAL 40u
 #define DIE 41u
 #define FACTORY 42u
+
+/* TX power, as in the original firmware: FF07 mode (0 Auto, 1 Manual, 2 Max,
+ * 3 Eco), FF08 manual 0..4 dBm (default 2), FF05 the applied dBm. Auto starts
+ * at 0 dBm, steps up once per run that ended in a watchdog restart (a failed
+ * rejoin) up to 4 and returns to 0 only after leaving the network. Stored in
+ * the security counter record: mode in bits 1:0, manual XOR 2 in bits 4:2 and
+ * the Auto level in bits 7:5, so zero is the default. */
+#define TX security_counter_app[0]
+#define TX_MODE() (TX & 3u)
+#define TX_MANUAL() ((uint8_t)(((TX >> 2) & 7u) ^ 2u))
+#define TX_LEVEL() ((uint8_t)(TX >> 5))
+#define TX_MAX 4u
+#if !defined(ZCL_FLOWER_RESET_CAUSE)
+/* SWRU191F 4.10 SLEEPSTA.RST[4:3]: 2 is a watchdog reset. */
+#define SOC_SLEEPSTA_ADDRESS 0x9du
+#define ZCL_FLOWER_RESET_CAUSE() (MMIO_READ(SOC_SLEEPSTA) & 0x18u)
+#endif
 /* Irrigation attributes: reportable read-only constants. Configure Reporting
  * succeeds without storing anything; reading it back is NOT_FOUND. */
 #define SINK 19u
@@ -64,9 +86,9 @@ static const MCU_CODE zcl_attribute_t attributes[] = {
     { 0x0000u, 0x0003u, 0x20u, 1, 1 }, { 0x0000u, 0x0007u, 0x30u, 1, 3 },
     { 0x0001u, 0x0031u, 0x30u, 1, 4 }, { 0x0001u, 0x0033u, 0x20u, 1, 2 },
     { 0x0b05u, 0xff01u, 0x21u, 1, 0 }, { 0x0b05u, 0xff02u, 0x21u, 1, 0 }, { 0x0b05u, 0xff03u, 0x21u, 1, 0 },
-    { 0x0b05u, 0xff05u, 0x28u, 1, 4 }, { 0x0b05u, 0xff06u, 0x21u, 1, 0 },
-    /* TX power mode MAX (fixed +4.5 dBm) and manual setting: read-only. */
-    { 0x0b05u, 0xff07u, 0x20u, 1, 2 }, { 0x0b05u, 0xff08u, 0x20u, 1, 2 },
+    { 0x0b05u, 0xff05u, 0x28u, 1, 0 }, { 0x0b05u, 0xff06u, 0x21u, 1, 0 },
+    /* TX power mode and manual setting: writable. */
+    { 0x0b05u, 0xff07u, 0x20u, 1, 0 }, { 0x0b05u, 0xff08u, 0x20u, 1, 0 },
     /* Die sensor average and the information-page word: read-only. */
     { 0x0b05u, 0xff12u, 0x21u, 1, 0 }, { 0x0b05u, 0xff13u, 0x21u, 1, 0 },
     { 0x0403u, 0x0014u, 0x28u, 1, 0xffu },
@@ -122,12 +144,34 @@ static uint8_t slot(uint8_t entry)
     return NONE;
 }
 
+/* SWRS081B Table 2: C5 -0.5, D5 1, E5 2.5, F5 4.5 dBm; 2 and 3 dBm share E5. */
+static const MCU_CODE uint8_t txpower[TX_MAX+1u] = { 0xc5u, 0xd5u, 0xe5u, 0xe5u, 0xf5u };
+
+static uint8_t dbm(void)
+{
+    uint8_t mode = TX_MODE();
+    if (!mode) return TX_LEVEL();
+    if (mode == 1u) return TX_MANUAL();
+    return mode == 2u ? TX_MAX : 0u;
+}
+
+/* Out-of-range stored fields fall back to their defaults. */
+static void tx_apply(void)
+{
+    if (TX_MANUAL() > TX_MAX) TX &= (uint8_t)~0x1cu;
+    if (TX_LEVEL() > TX_MAX) TX &= 0x1fu;
+    join_smoke_power = txpower[dbm()];
+}
+
 static uint16_t value(uint8_t entry)
 {
     if (entry < ZCL_SENSOR_REPORTS) return ST.values[entry];
     if (entry == IDENTIFY) return ST.identify;
     if (entry == INTERVAL) return ST.interval;
     if (entry == CHANNEL) return ST.channel;
+    if (entry == TXPOWER) return dbm();
+    if (entry == TXMODE) return TX_MODE();
+    if (entry == TXMANUAL) return TX_MANUAL();
     if (entry == DIE) return ST.die;
     if (entry == FACTORY) return ST.factory;
     return attributes[entry].value;
@@ -249,8 +293,9 @@ static uint8_t statuses(uint8_t command)
     return BUILT;
 }
 
-/* Validates every record before the second pass writes. IdentifyTime and the
- * sampling interval (30..3600 s; a new interval samples at once) are writable. */
+/* Validates every record before the second pass writes. IdentifyTime, the
+ * sampling interval (30..3600 s; a new interval samples at once) and the TX
+ * power mode (0..3) and manual setting (0..4) are writable. */
 static uint8_t write(void)
 {
     uint8_t n;
@@ -266,12 +311,18 @@ static uint8_t write(void)
             if (ST.entry == NONE) ST.status = 0x86;
             else if (ST.kind != ST.type) ST.status = 0x8d;
             else if (ST.entry == IDENTIFY) ST.status = 0;
+            else if (ST.entry == TXMODE) ST.status = IN[ST.in] > 3u ? 0x87u : 0u;
+            else if (ST.entry == TXMANUAL) ST.status = IN[ST.in] > TX_MAX ? 0x87u : 0u;
             else if (ST.entry != INTERVAL) ST.status = 0x88;
             else ST.status = LE(ST.in) < ZCL_FLOWER_INTERVAL_MIN || LE(ST.in) > ZCL_FLOWER_INTERVAL_MAX ? 0x87u : 0u;
             if (ST.apply) {
                 if (ST.status) { emit(ST.status); emit16(ST.id); }
                 else if (ST.entry == IDENTIFY) ST.identify = LE(ST.in);
-                else { ST.interval = LE(ST.in); ST.started = 0; }
+                else if (ST.entry == TXMODE) { TX = (uint8_t)((TX & ~3u) | IN[ST.in]); tx_apply(); }
+                else if (ST.entry == TXMANUAL) {
+                    TX = (uint8_t)((TX & ~0x1cu) | (uint8_t)((IN[ST.in] ^ 2u) << 2));
+                    tx_apply();
+                } else { ST.interval = LE(ST.in); ST.started = 0; }
             }
             ST.in += n;
         }
@@ -643,6 +694,13 @@ static void power(uint8_t on)
     MMIO_SET(SOC_T3CTL, 0x04u);
     MMIO_CLEAR(SOC_P1, BOARD_FLOWER_PWM | BOARD_FLOWER_RAIL);
     MMIO_CLEAR(SOC_P1SEL, BOARD_FLOWER_PWM);
+}
+
+void zcl_sensor_start(uint8_t member) JOIN_FAR
+{
+    if (!member) TX &= 0x1fu;
+    else if (!TX_MODE() && TX_LEVEL() < TX_MAX && ZCL_FLOWER_RESET_CAUSE() == 0x10u) TX += 0x20u;
+    tx_apply();
 }
 
 void zcl_sensor_boot(void) JOIN_FAR

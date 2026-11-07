@@ -10,7 +10,9 @@
     "-DCC2530_RX_OFF_IDLE",
     "-DCC2530_PM2_IDLE",
     "-DCC2530_ZDO_DESCRIPTORS",
-    "-DCC2530_APP_QUIET"
+    "-DCC2530_APP_QUIET",
+    "-DCC2530_TX_POWER",
+    "-DCC2530_APP_SETTINGS"
   ],
   "include": ["include"],
   "units": {
