@@ -557,6 +557,11 @@ static void tx_power(void)
     /* Manual 3 dBm (E5), then the out-of-range and mistyped writes. */
     zcl_req(0x0b05, "\x00\x22\x02\x07\xff\x20\x01\x08\xff\x20\x03", 11, "\x18\x22\x04\x00", 4);
     CHECK(TX_MODE() == 1u && TX_MANUAL() == 3u && join_smoke_power == 0xe5);
+    /* A watchdog run in Manual leaves the byte as is: nothing to checkpoint. */
+    i = TX; reset_cause = 0x10;
+    zcl_sensor_start(1);
+    CHECK(TX == i && join_smoke_power == 0xe5);
+    reset_cause = 0x00;
     zcl_req(0x0b05, "\x00\x23\x00\x05\xff\x07\xff\x08\xff", 9,
             "\x18\x23\x01\x05\xff\x00\x28\x03\x07\xff\x00\x20\x01\x08\xff\x00\x20\x03", 18);
     zcl_req(0x0b05, "\x00\x24\x02\x07\xff\x20\x04\x08\xff\x20\x05\x05\xff\x28\x00", 15,
