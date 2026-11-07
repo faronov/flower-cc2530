@@ -567,8 +567,10 @@ uint8_t zcl_sensor_init(const security_keys_config_t MCU_XDATA *identity) JOIN_F
         reporting(i)->age = reporting(i)->min;
     }
     for (i = 0; i < ZCL_FLOWER_SLOTS; i++) ST.bound[i] = present(slots[i].ep, slots[i].cluster) ? 1u : 0u;
-    ST.second = CTX.last;
+    ST.second = ST.led_at = CTX.last;
     ST.basic = 1;
+    MMIO_CLEAR(SOC_P0, BOARD_FLOWER_LED);
+    ST.flashes = ZCL_FLOWER_JOIN_FLASHES;
     return 1;
 }
 
@@ -775,9 +777,31 @@ static void measure(void)
     ST.values[ZCL_FLOWER_ILLUMINANCE] = illuminance(light);
 }
 
+/* Identify blinks the LED; join flashes are whole on/off pairs. Returns the
+ * symbols to the next toggle, FFFFFFFF when idle (LED off; the deadline
+ * follows now, so a new Identify starts at once). */
+static uint32_t blink(uint32_t now)
+{
+    if (!ST.identify && !ST.flashes && !ST.led) {
+        ST.led_at = now;
+        return 0xffffffffUL;
+    }
+    if ((int32_t)(now-ST.led_at) >= 0) {
+        ST.led ^= 1u;
+        if (ST.led) MMIO_SET(SOC_P0, BOARD_FLOWER_LED);
+        else {
+            MMIO_CLEAR(SOC_P0, BOARD_FLOWER_LED);
+            if (ST.flashes) ST.flashes--;
+        }
+        ST.led_at = now+ZCL_FLOWER_BLINK;
+        if (!ST.led && !ST.identify && !ST.flashes) return 0xffffffffUL;
+    }
+    return ST.led_at-now;
+}
+
 uint32_t zcl_sensor_quiet(uint32_t now) JOIN_FAR
 {
-    uint32_t left;
+    uint32_t left, led = blink(now);
     if (ST.phase) {
         if ((int32_t)(now-ST.deadline) < 0) return 0;
         measure();
@@ -788,7 +812,7 @@ uint32_t zcl_sensor_quiet(uint32_t now) JOIN_FAR
         return 0;
     }
     left = ST.deadline-now;
-    if (ST.started && left && left < 0x80000000UL) return left;
+    if (ST.started && left && left < 0x80000000UL) return left < led ? left : led;
     power(1);
     ST.phase = 1;
     ST.deadline = now+ZCL_FLOWER_WARMUP;

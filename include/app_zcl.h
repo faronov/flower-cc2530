@@ -40,6 +40,10 @@
 /* Sensor rail and soil excitation settle before the ADC window (symbols). */
 #define ZCL_FLOWER_WARMUP 3125UL
 #define ZCL_FLOWER_ADC_POLLS 4000u
+/* Status LED half period (symbols): Identify blinks it, and zcl_sensor_init
+ * (network READY) flashes it ZCL_FLOWER_JOIN_FLASHES times. */
+#define ZCL_FLOWER_BLINK 31250UL
+#define ZCL_FLOWER_JOIN_FLASHES 3u
 
 #define ZCL_FLOWER_INVALID_U16 0xffffu
 #define ZCL_FLOWER_INVALID_S16 0x8000u
@@ -82,8 +86,10 @@ typedef struct {
     /* zcl_sensor_init copies tc_ieee and clears everything from report on. */
     uint8_t tc_ieee[8];
     zcl_sensor_reporting_t report[ZCL_SENSOR_REPORTS];
-    uint32_t second;
+    uint32_t second, led_at;
     uint16_t identify, value, pending;
+    /* LED on, remaining join flashes. */
+    uint8_t led, flashes;
     uint8_t MCU_XDATA *out;
     /* Coordinator endpoint per binding slot; 0 is unbound. */
     uint8_t bound[ZCL_FLOWER_SLOTS];
@@ -100,9 +106,10 @@ extern MCU_XDATA zcl_sensor_state_t zcl_flower_state;
  * and the ZDO simple descriptors (zdo_srv.h CC2530_ZDO_DESCRIPTORS). */
 void zcl_sensor_boot(void) JOIN_FAR;
 /* Called by join_smoke_sleep at a quiescent READY point with the current MAC
- * symbol time: advances the measurement cycle. Returns 0 when the device must
- * stay awake (work was done, or the soil excitation timer, which PM2 stops,
- * is running), otherwise the symbols until the next sensor deadline. */
+ * symbol time: advances the measurement cycle and the LED. Returns 0 when the
+ * device must stay awake (work was done, or the soil excitation timer, which
+ * PM2 stops, is running), otherwise the symbols until the next sensor or LED
+ * deadline (PM2 retains the LED pin). */
 uint32_t zcl_sensor_quiet(uint32_t now) JOIN_FAR;
 
 #endif
