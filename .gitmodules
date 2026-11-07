@@ -1,0 +1,3 @@
+[submodule "cc2530-zigbee"]
+	path = cc2530-zigbee
+	url = https://github.com/faronov/cc2530-zigbee.git
