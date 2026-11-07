@@ -23,7 +23,7 @@ static unsigned long checks;
  * 14-bit code is returned left-aligned (SWRU191F 12.2.10) and ADCH clears
  * EOC. stuck never completes; negative returns a negative result. */
 volatile uint8_t SOC_ADCCON1, SOC_ADCCON3, SOC_ADCL, SOC_ADCH, SOC_APCFG;
-volatile uint8_t SOC_P1, SOC_P1SEL, SOC_P2SEL, SOC_PERCFG, SOC_T3CTL, SOC_T3CCTL1, SOC_T3CC0;
+volatile uint8_t SOC_P0, SOC_P1, SOC_P1SEL, SOC_P2SEL, SOC_PERCFG, SOC_T3CTL, SOC_T3CCTL1, SOC_T3CC0;
 static struct {
     uint16_t battery, light, soil, die;
     uint8_t stuck, negative, commands[32], n;
@@ -477,10 +477,55 @@ static void climate_and_probe(void)
     idle();
 }
 
+static void led(void)
+{
+    uint32_t now = 0xfffff000ul, sleep = 300ul*ZCL_SENSOR_SECOND;
+    unsigned i;
+    boot(0);
+    SOC_P0 = 0;
+    adc_set(6772, 1000, 4073);
+    CHECK(zcl_sensor_quiet(now) == 0 && zcl_sensor_quiet(now+ZCL_FLOWER_WARMUP) == 0);
+    now += ZCL_FLOWER_WARMUP;
+    /* Before READY: dark, asleep until the measurement. */
+    CHECK(zcl_sensor_quiet(now) == sleep && !(SOC_P0 & BOARD_FLOWER_LED));
+    /* READY: three on/off flashes, sleeping between toggles (across the
+     * 32-bit wrap), then dark again. */
+    SOC_P0 = BOARD_FLOWER_LED;
+    reset(now);
+    CHECK(!(SOC_P0 & BOARD_FLOWER_LED));
+    for (i = 0; i+1u < 2u*ZCL_FLOWER_JOIN_FLASHES; i++) {
+        CHECK(zcl_sensor_quiet(now) == ZCL_FLOWER_BLINK);
+        CHECK((uint8_t)!(SOC_P0 & BOARD_FLOWER_LED) == (uint8_t)(i & 1u) && ST.flashes == ZCL_FLOWER_JOIN_FLASHES-(i+1u)/2u);
+        CHECK(zcl_sensor_quiet(now+1u) == ZCL_FLOWER_BLINK-1u);
+        now += ZCL_FLOWER_BLINK;
+        sleep -= ZCL_FLOWER_BLINK;
+    }
+    /* The last off edge needs no further wake-up. */
+    CHECK(zcl_sensor_quiet(now) == sleep && !(SOC_P0 & BOARD_FLOWER_LED) && !ST.flashes && !ST.led);
+    CHECK(zcl_sensor_quiet(now+1u) == sleep-1u);
+    now++; sleep--;
+    /* Identify blinks at once until the time runs out; the LED ends dark. */
+    ST.identify = 1;
+    CHECK(zcl_sensor_quiet(now) == ZCL_FLOWER_BLINK && (SOC_P0 & BOARD_FLOWER_LED));
+    CHECK(zcl_sensor_quiet(now+ZCL_FLOWER_BLINK) == ZCL_FLOWER_BLINK && !(SOC_P0 & BOARD_FLOWER_LED));
+    CHECK(zcl_sensor_quiet(now+2u*ZCL_FLOWER_BLINK) == ZCL_FLOWER_BLINK && (SOC_P0 & BOARD_FLOWER_LED));
+    ST.identify = 0;
+    CHECK(zcl_sensor_quiet(now+3u*ZCL_FLOWER_BLINK) == sleep-3u*ZCL_FLOWER_BLINK);
+    CHECK(!(SOC_P0 & BOARD_FLOWER_LED) && !ST.led);
+    /* The sensor deadline still wins when it is nearer. */
+    ST.identify = 1;
+    CHECK(zcl_sensor_quiet(now+sleep-10u) == 10u && (SOC_P0 & BOARD_FLOWER_LED));
+    CHECK(zcl_sensor_quiet(now+sleep) == 0 && ST.phase == 1);
+    ST.identify = 0;
+    CHECK(zcl_sensor_quiet(now+sleep+ZCL_FLOWER_WARMUP) == 0);
+    CHECK(zcl_sensor_quiet(now+sleep+ZCL_FLOWER_BLINK) == 300ul*ZCL_SENSOR_SECOND-(ZCL_FLOWER_BLINK-ZCL_FLOWER_WARMUP));
+    CHECK(!(SOC_P0 & BOARD_FLOWER_LED));
+}
+
 int main(void)
 {
-    conversions(); descriptors(); cycle(); server(); reports(); climate_and_probe();
+    conversions(); descriptors(); cycle(); server(); reports(); climate_and_probe(); led();
     printf("ZCL flower: %lu checks PASS; modeled ADC/Timer 3 cycle, conversions, descriptors, "
-           "converter attributes and grouped reports (host only).\n", checks);
+           "converter attributes, grouped reports and LED (host only).\n", checks);
     return 0;
 }
