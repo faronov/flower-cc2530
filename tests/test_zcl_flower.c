@@ -7,10 +7,14 @@
  * included to reach its static conversions. Values are SYNTHETIC. */
 #include <math.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
+static uint8_t reset_cause;
+#define ZCL_FLOWER_RESET_CAUSE() reset_cause
 #include "zcl_flower.c"
 
 MCU_XDATA bdb_join_t join_smoke_device;
+MCU_XDATA uint8_t security_counter_app[2], join_smoke_power;
 
 #define CHECK(x) do { checks++; if (!(x)) { \
     fprintf(stderr, "zcl_flower: line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
@@ -522,10 +526,76 @@ static void led(void)
     CHECK(!(SOC_P0 & BOARD_FLOWER_LED));
 }
 
+/* FF05/FF07/FF08 against the original firmware: Auto steps once per
+ * watchdog-ended run up to 4 dBm and restarts at 0 after leave; the settings
+ * live in security_counter_app[0] and select join_smoke_power. */
+static void tx_power(void)
+{
+    static const uint8_t raw[5] = { 0xc5, 0xd5, 0xe5, 0xe5, 0xf5 };
+    uint8_t i;
+    boot(0);
+    reset(1000);
+    memset(security_counter_app, 0, 2); join_smoke_power = 0;
+    reset_cause = 0x10;
+    zcl_sensor_start(0);
+    CHECK(!security_counter_app[0] && !security_counter_app[1] && join_smoke_power == 0xc5);
+    zcl_req(0x0b05, "\x00\x20\x00\x05\xff\x07\xff\x08\xff", 9,
+            "\x18\x20\x01\x05\xff\x00\x28\x00\x07\xff\x00\x20\x00\x08\xff\x00\x20\x02", 18);
+    for (i = 1; i <= 5u; i++) {
+        zcl_sensor_start(1);
+        CHECK(TX_LEVEL() == (i < 4u ? i : 4u) && join_smoke_power == raw[i < 4u ? i : 4u]);
+    }
+    zcl_req(0x0b05, "\x00\x21\x00\x05\xff", 5, "\x18\x21\x01\x05\xff\x00\x28\x04", 8);
+    /* Other resets keep the level; leaving restarts Auto at 0 dBm. */
+    reset_cause = 0x00;
+    zcl_sensor_start(1);
+    CHECK(TX_LEVEL() == 4u && join_smoke_power == 0xf5);
+    zcl_sensor_start(0);
+    CHECK(!TX && join_smoke_power == 0xc5);
+    zcl_sensor_start(1);
+    CHECK(!TX && join_smoke_power == 0xc5);
+    /* Manual 3 dBm (E5), then the out-of-range and mistyped writes. */
+    zcl_req(0x0b05, "\x00\x22\x02\x07\xff\x20\x01\x08\xff\x20\x03", 11, "\x18\x22\x04\x00", 4);
+    CHECK(TX_MODE() == 1u && TX_MANUAL() == 3u && join_smoke_power == 0xe5);
+    /* A watchdog run in Manual leaves the byte as is: nothing to checkpoint. */
+    i = TX; reset_cause = 0x10;
+    zcl_sensor_start(1);
+    CHECK(TX == i && join_smoke_power == 0xe5);
+    reset_cause = 0x00;
+    zcl_req(0x0b05, "\x00\x23\x00\x05\xff\x07\xff\x08\xff", 9,
+            "\x18\x23\x01\x05\xff\x00\x28\x03\x07\xff\x00\x20\x01\x08\xff\x00\x20\x03", 18);
+    zcl_req(0x0b05, "\x00\x24\x02\x07\xff\x20\x04\x08\xff\x20\x05\x05\xff\x28\x00", 15,
+            "\x18\x24\x04\x87\x07\xff\x87\x08\xff\x88\x05\xff", 12);
+    zcl_req(0x0b05, "\x00\x25\x02\x08\xff\x21\x01\x00", 8, "\x18\x25\x04\x8d\x08\xff", 6);
+    CHECK(TX_MODE() == 1u && TX_MANUAL() == 3u && join_smoke_power == 0xe5);
+    zcl_req(0x0b05, "\x00\x26\x02\x08\xff\x20\x00", 7, "\x18\x26\x04\x00", 4);
+    CHECK(TX_MANUAL() == 0u && join_smoke_power == 0xc5);
+    /* Max and Eco; a watchdog run steps only in Auto. */
+    zcl_req(0x0b05, "\x00\x27\x02\x07\xff\x20\x02", 7, "\x18\x27\x04\x00", 4);
+    CHECK(join_smoke_power == 0xf5);
+    zcl_req(0x0b05, "\x00\x28\x02\x07\xff\x20\x03", 7, "\x18\x28\x04\x00", 4);
+    CHECK(join_smoke_power == 0xc5);
+    zcl_req(0x0b05, "\x00\x29\x00\x05\xff", 5, "\x18\x29\x01\x05\xff\x00\x28\x00", 8);
+    reset_cause = 0x10;
+    zcl_sensor_start(1);
+    CHECK(TX_MODE() == 3u && !TX_LEVEL() && join_smoke_power == 0xc5);
+    zcl_req(0x0b05, "\x00\x2a\x02\x07\xff\x20\x00", 7, "\x18\x2a\x04\x00", 4);
+    zcl_sensor_start(1);
+    CHECK(TX_LEVEL() == 1u && join_smoke_power == 0xd5);
+    /* Out-of-range stored fields fall back to the defaults. */
+    security_counter_app[0] = 0xff;
+    zcl_sensor_start(1);
+    CHECK(TX == 0x03u && join_smoke_power == 0xc5);
+    security_counter_app[0] = 0x1du;
+    zcl_sensor_start(1);
+    CHECK(TX_MODE() == 1u && TX_MANUAL() == 2u && join_smoke_power == 0xe5);
+    CHECK(!security_counter_app[1]);
+}
+
 int main(void)
 {
-    conversions(); descriptors(); cycle(); server(); reports(); climate_and_probe(); led();
+    conversions(); descriptors(); cycle(); server(); reports(); climate_and_probe(); led(); tx_power();
     printf("ZCL flower: %lu checks PASS; modeled ADC/Timer 3 cycle, conversions, descriptors, "
-           "converter attributes, grouped reports and LED (host only).\n", checks);
+           "converter attributes, grouped reports, LED and TX power (host only).\n", checks);
     return 0;
 }
