@@ -39,9 +39,9 @@
 /* TX power, as in the original firmware: FF07 mode (0 Auto, 1 Manual, 2 Max,
  * 3 Eco), FF08 manual 0..4 dBm (default 2), FF05 the applied dBm. Auto starts
  * at 0 dBm, steps up once per run that ended in a watchdog restart (a failed
- * rejoin) up to 4 and returns to 0 only after leaving the network. Stored in
- * the security counter record: mode in bits 1:0, manual XOR 2 in bits 4:2 and
- * the Auto level in bits 7:5, so zero is the default. */
+ * rejoin) up to 4. Leaving the network restores all of them to the defaults.
+ * Stored in the security counter record: mode in bits 1:0, manual XOR 2 in
+ * bits 4:2 and the Auto level in bits 7:5, so zero is the default. */
 #define TX security_counter_app[0]
 #define TX_MODE() (TX & 3u)
 #define TX_MANUAL() ((uint8_t)(((TX >> 2) & 7u) ^ 2u))
@@ -698,7 +698,7 @@ static void power(uint8_t on)
 
 void zcl_sensor_start(uint8_t member) JOIN_FAR
 {
-    if (!member) TX &= 0x1fu;
+    if (!member) TX = 0;
     else if (!TX_MODE() && TX_LEVEL() < TX_MAX && ZCL_FLOWER_RESET_CAUSE() == 0x10u) TX += 0x20u;
     tx_apply();
 }
