@@ -527,7 +527,7 @@ static void led(void)
 }
 
 /* FF05/FF07/FF08 against the original firmware: Auto steps once per
- * watchdog-ended run up to 4 dBm and restarts at 0 after leave; the settings
+ * watchdog-ended run up to 4 dBm, leave restores all settings; they
  * live in security_counter_app[0] and select join_smoke_power. */
 static void tx_power(void)
 {
