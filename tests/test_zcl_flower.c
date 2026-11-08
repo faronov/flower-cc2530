@@ -527,7 +527,7 @@ static void led(void)
 }
 
 /* FF05/FF07/FF08 against the original firmware: Auto steps once per
- * watchdog-ended run up to 4 dBm and restarts at 0 after leave; the settings
+ * watchdog-ended run up to 4 dBm, leave restores all settings; they
  * live in security_counter_app[0] and select join_smoke_power. */
 static void tx_power(void)
 {
@@ -562,6 +562,13 @@ static void tx_power(void)
     zcl_sensor_start(1);
     CHECK(TX == i && join_smoke_power == 0xe5);
     reset_cause = 0x00;
+    /* Leaving restores Manual, the manual value and the Auto level to zero. */
+    TX = (uint8_t)(i | 0x40u);
+    zcl_sensor_start(0);
+    CHECK(!TX && join_smoke_power == 0xc5);
+    TX = i;
+    zcl_sensor_start(1);
+    CHECK(TX == i && join_smoke_power == 0xe5);
     zcl_req(0x0b05, "\x00\x23\x00\x05\xff\x07\xff\x08\xff", 9,
             "\x18\x23\x01\x05\xff\x00\x28\x03\x07\xff\x00\x20\x01\x08\xff\x00\x20\x03", 18);
     zcl_req(0x0b05, "\x00\x24\x02\x07\xff\x20\x04\x08\xff\x20\x05\x05\xff\x28\x00", 15,
