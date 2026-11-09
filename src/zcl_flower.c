@@ -835,6 +835,20 @@ static void measure(void)
     ST.values[ZCL_FLOWER_ILLUMINANCE] = illuminance(light);
 }
 
+#if defined(FLOWER_GPD)
+/* Green Power variant (src/gpd_main.c): the same probe power and
+ * measurement, timed by the caller; results land in ST.values. */
+void zcl_flower_power(uint8_t on) JOIN_FAR
+{
+    power(on);
+}
+
+void zcl_flower_measure(void) JOIN_FAR
+{
+    measure();
+}
+#endif
+
 /* Identify blinks the LED; join flashes are whole on/off pairs. Returns the
  * symbols to the next toggle, FFFFFFFF when idle (LED off; the deadline
  * follows now, so a new Identify starts at once). */
