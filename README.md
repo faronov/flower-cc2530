@@ -117,10 +117,13 @@ cd quirks && python -m pytest test_zha_quirk_diyruz_flowerx_gp.py   # zha, zha-q
 - The quirk passes against zha 2.4.2 and zha-quirks 2.4.1.
 - In MCUEMU the image transmits the expected frames on channel 15 and wakes
   from PM2.
+- On hardware (FlowerX, Home Assistant Connect ZBT-1, bellows EZSP, zha 2.4.2)
+  the device commissions as a GreenPower device with the quirk applied and
+  reports temperature, soil moisture, illuminance, battery voltage and
+  remaining.
 
 **Not yet verified on hardware:**
 
-- whether the coordinator's NCP forwards GPDFs;
 - sleep current.
 
 ## License
