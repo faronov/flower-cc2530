@@ -10,8 +10,11 @@
  * commissioning window, ZHA permit join, is open), then one Multi-Cluster
  * Reporting GPDF every GPD_INTERVAL seconds. Each GPDF goes out
  * GPD_REPEAT times with the same MAC sequence number (the sink drops the
- * duplicates). The device sleeps in PM2 between rounds; any bounded wait
- * that expires restarts it through the watchdog. */
+ * duplicates), GPD_REPEAT_GAP apart. The device sleeps in PM2 between
+ * rounds and between repetitions (so a supply capacitor can recharge), and
+ * idles the CPU (PM0 idle; Timer 3 still drives the soil probe) while the
+ * probe warms up; any bounded wait that expires restarts it through the
+ * watchdog. */
 #include "join_smoke.h"
 #include "zcl_sensor.h"
 #include "clock.h"
@@ -33,6 +36,10 @@
 #ifndef GPD_REPEAT
 #define GPD_REPEAT 3u
 #endif
+/* Sleep Timer ticks between repetitions: 655 is 20 ms. */
+#ifndef GPD_REPEAT_GAP
+#define GPD_REPEAT_GAP 655UL
+#endif
 /* SWRS081B Table 2: F5 is +4.5 dBm. */
 #ifndef GPD_TXPOWER
 #define GPD_TXPOWER 0xf5u
@@ -53,10 +60,13 @@
 #define SECOND 32768UL
 #define WARMUP 1639UL      /* ZCL_FLOWER_WARMUP: 50 ms */
 #define TX_WAIT 164UL      /* 5 ms per GPDF (about 1.6 ms on air) */
-#define GAP 66UL           /* 2 ms between repetitions */
 #define LED_ON 655UL       /* 20 ms commissioning flash */
 #define SPIN_WAIT 4096UL   /* 125 ms for clock and Sleep Timer handshakes */
 #define SLEEP_MIN 8UL
+/* SWRU191F 4.1 SLEEPCMD.MODE with OSC_PD (unused 16-MHz RCOSC off):
+ * PM2, or PM0 where PCON.IDLE only halts the CPU. */
+#define SLEEP_PM2 0x06u
+#define SLEEP_IDLE 0x04u
 
 /* Read by a debugger: progress and the last failure. */
 typedef struct {
@@ -93,12 +103,6 @@ __attribute__((noinline)) static void restart(uint8_t failure)
     for (;;) {}
 }
 
-static void pause(uint32_t ticks)
-{
-    mark = NOW();
-    while (SINCE(mark) < ticks) {}
-}
-
 /* SWRU191F 23.15: TX-relevant part of the stack's radio profile
  * (radio_autoack.c), AUTOCRC without AUTOACK, then channel and power. */
 static void radio_setup(void)
@@ -113,13 +117,78 @@ static void radio_setup(void)
     MMIO_XWRITE(0x6190u, GPD_TXPOWER);
 }
 
+/* STIF clear; IEN0 = EA|STIE, then PCON.IDLE whose successor must not start
+ * on a 4-byte boundary (SWRU191F 4.2); clr EA runs before any ISR (the
+ * stack's join_smoke_sleep_isr owns the vector). Common code: the alignment
+ * padding stays out of the size-packed banks. */
+__attribute__((noinline)) MCU_COMMON_CODE static void enter_pm2(void)
+{
+    __asm__ volatile("clr 0xc7\n\t.p2align 2\n\tmov 0xa8,#0xa0\n\tmov 0x87,#1\n\tclr 0xaf" ::: "memory");
+}
+
+#define SPIN(condition, code) do { mark = NOW(); \
+    while (condition) if (SINCE(mark) >= SPIN_WAIT) restart(code); } while (0)
+
+/* PM2 (or CPU idle) until the Sleep Timer reaches wake (as
+ * join_smoke_sleep: compare ST2, ST1, ST0 after STLOAD; after PM2 the XOSC
+ * back, then a fresh 32-kHz edge). A wake already due or too close, or an
+ * early wake, ends in a busy wait. */
+static void sleep_until(uint32_t wake, uint8_t mode)
+{
+    uint32_t left = (wake-NOW())&TIMEBASE_TICKS_MASK;
+    S.stage = 4;
+    if (left >= TIMEBASE_TICKS_MASK/2u) return;
+    if (left > SLEEP_MIN*2u) {
+        SPIN(!(MMIO_READ(SOC_STLOAD) & 1u), 5);
+        MMIO_WRITE(SOC_ST2, (uint8_t)(wake >> 16));
+        MMIO_WRITE(SOC_ST1, (uint8_t)(wake >> 8));
+        MMIO_WRITE(SOC_ST0, (uint8_t)wake);
+        if (((wake-NOW())&TIMEBASE_TICKS_MASK) >= SLEEP_MIN) {
+            MMIO_WRITE(SOC_SLEEPCMD, mode);
+            enter_pm2();
+            MMIO_WRITE(SOC_IEN0, 0);
+            MMIO_WRITE(SOC_SLEEPCMD, SLEEP_IDLE);
+            if (mode == SLEEP_PM2) {
+                S.stage = 5;
+                SPIN(MMIO_READ(SOC_CLKCONSTA) != MMIO_READ(SOC_CLKCONCMD), 6);
+                SPIN(MMIO_READ(SOC_SLEEPSTA) & 1u, 7);
+                SPIN(!(MMIO_READ(SOC_SLEEPSTA) & 1u), 8);
+            }
+        }
+    }
+    while (((NOW()-wake)&TIMEBASE_TICKS_MASK) >= TIMEBASE_TICKS_MASK/2u) {}
+}
+
+static void nap(uint32_t ticks, uint8_t mode)
+{
+    sleep_until((NOW()+ticks)&TIMEBASE_TICKS_MASK, mode);
+}
+
+static void sample(void)
+{
+    S.stage = 2;
+    zcl_flower_power(1);
+    nap(WARMUP, SLEEP_IDLE);
+    zcl_flower_measure();
+    zcl_flower_power(0);
+    values.temperature = (int16_t)ZCL_SENSOR_STATE.values[ZCL_FLOWER_TEMPERATURE];
+    values.soil = ZCL_SENSOR_STATE.values[ZCL_FLOWER_SOIL];
+    values.illuminance = ZCL_SENSOR_STATE.values[ZCL_FLOWER_ILLUMINANCE];
+    values.voltage = (uint8_t)ZCL_SENSOR_STATE.values[ZCL_FLOWER_VOLTAGE];
+    values.percent = (uint8_t)ZCL_SENSOR_STATE.values[ZCL_FLOWER_PERCENT];
+}
+
 /* One GPDF GPD_REPEAT times: TX FIFO length (with FCS) and body, ISTXON
- * (calibrates, then sends without CCA), TXDONE, radio off. */
+ * (calibrates, then sends without CCA), TXDONE, radio off; PM2 between
+ * repetitions, then the radio profile again. */
 static void send(uint8_t length)
 {
     uint8_t r, i;
     for (r = 0; r < GPD_REPEAT; r++) {
-        if (r) pause(GAP);
+        if (r) {
+            nap(GPD_REPEAT_GAP, SLEEP_PM2);
+            radio_setup();
+        }
         MMIO_WRITE(SOC_RFST, RFST_ISFLUSHTX);
         MMIO_WRITE(SOC_RFD, length + 2u);
         for (i = 0; i < length; i++) MMIO_WRITE(SOC_RFD, frame[i]);
@@ -134,59 +203,6 @@ static void send(uint8_t length)
         MMIO_WRITE(SOC_RFST, RFST_ISRFOFF);
     }
     S.seq++;
-}
-
-static void sample(void)
-{
-    S.stage = 2;
-    zcl_flower_power(1);
-    pause(WARMUP);
-    zcl_flower_measure();
-    zcl_flower_power(0);
-    values.temperature = (int16_t)ZCL_SENSOR_STATE.values[ZCL_FLOWER_TEMPERATURE];
-    values.soil = ZCL_SENSOR_STATE.values[ZCL_FLOWER_SOIL];
-    values.illuminance = ZCL_SENSOR_STATE.values[ZCL_FLOWER_ILLUMINANCE];
-    values.voltage = (uint8_t)ZCL_SENSOR_STATE.values[ZCL_FLOWER_VOLTAGE];
-    values.percent = (uint8_t)ZCL_SENSOR_STATE.values[ZCL_FLOWER_PERCENT];
-}
-
-/* STIF clear; IEN0 = EA|STIE, then PCON.IDLE whose successor must not start
- * on a 4-byte boundary (SWRU191F 4.2); clr EA runs before any ISR (the
- * stack's join_smoke_sleep_isr owns the vector). Common code: the alignment
- * padding stays out of the size-packed banks. */
-__attribute__((noinline)) MCU_COMMON_CODE static void enter_pm2(void)
-{
-    __asm__ volatile("clr 0xc7\n\t.p2align 2\n\tmov 0xa8,#0xa0\n\tmov 0x87,#1\n\tclr 0xaf" ::: "memory");
-}
-
-#define SPIN(condition, code) do { mark = NOW(); \
-    while (condition) if (SINCE(mark) >= SPIN_WAIT) restart(code); } while (0)
-
-/* PM2 until the Sleep Timer reaches wake (as join_smoke_sleep: compare
- * ST2, ST1, ST0 after STLOAD; XOSC back, then a fresh 32-kHz edge). A wake
- * already due or too close is a busy wait instead. */
-static void sleep_until(uint32_t wake)
-{
-    uint32_t left = (wake-NOW())&TIMEBASE_TICKS_MASK;
-    S.stage = 4;
-    if (left >= TIMEBASE_TICKS_MASK/2u) return;
-    if (left > SLEEP_MIN*2u) {
-        SPIN(!(MMIO_READ(SOC_STLOAD) & 1u), 5);
-        MMIO_WRITE(SOC_ST2, (uint8_t)(wake >> 16));
-        MMIO_WRITE(SOC_ST1, (uint8_t)(wake >> 8));
-        MMIO_WRITE(SOC_ST0, (uint8_t)wake);
-        if (((wake-NOW())&TIMEBASE_TICKS_MASK) >= SLEEP_MIN) {
-            MMIO_WRITE(SOC_SLEEPCMD, 0x06);   /* PM2, unused 16-MHz RCOSC off */
-            enter_pm2();
-            MMIO_WRITE(SOC_IEN0, 0);
-            MMIO_WRITE(SOC_SLEEPCMD, 0x04);
-            S.stage = 5;
-            SPIN(MMIO_READ(SOC_CLKCONSTA) != MMIO_READ(SOC_CLKCONCMD), 6);
-            SPIN(MMIO_READ(SOC_SLEEPSTA) & 1u, 7);
-            SPIN(!(MMIO_READ(SOC_SLEEPSTA) & 1u), 8);
-        }
-    }
-    while (((NOW()-wake)&TIMEBASE_TICKS_MASK) >= TIMEBASE_TICKS_MASK/2u) {}
 }
 
 void main(void)
@@ -218,9 +234,10 @@ void main(void)
             S.rounds++;
             MMIO_SET(SOC_P0, BOARD_FLOWER_LED);
             send(gpd_commissioning(frame, S.seq, S.src));
-            pause(GAP);
+            nap(GPD_REPEAT_GAP, SLEEP_PM2);
+            radio_setup();
             send(gpd_report(frame, S.seq, S.src, &values));
-            pause(LED_ON);
+            nap(LED_ON, SLEEP_PM2);
             MMIO_CLEAR(SOC_P0, BOARD_FLOWER_LED);
             period = GPD_COMMISSION_PERIOD;
         } else {
@@ -228,6 +245,6 @@ void main(void)
             period = GPD_INTERVAL;
         }
         deadline = (deadline + (uint32_t)period*SECOND) & TIMEBASE_TICKS_MASK;
-        sleep_until(deadline);
+        sleep_until(deadline, SLEEP_PM2);
     }
 }

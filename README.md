@@ -90,8 +90,10 @@ network. It reuses the regular sensor cycle and broadcasts raw GPDFs:
   `GPD_INTERVAL` (60 s). It carries temperature (0x0402), soil moisture
   (0x0408), illuminance (0x0400), battery voltage (0x0001/0x0020) and battery
   remaining (0x0001/0x0021), all in their ZCL encodings.
-- Repeats and sleep: each GPDF is sent 3 times, and the device sleeps in PM2
-  between rounds.
+- Repeats and sleep: each GPDF is sent 3 times, 20 ms apart
+  (`GPD_REPEAT_GAP`), with PM2 between repetitions and between rounds. While
+  the probe warms up (50 ms) the CPU idles; PM2 would stop Timer 3, which
+  drives the soil probe.
 
 ### Pairing with ZHA
 
@@ -126,6 +128,12 @@ cd quirks && python -m pytest test_zha_quirk_diyruz_flowerx_gp.py   # zha, zha-q
   close to the probe's zero offset. A commissioning round (E0 and A2, 3 times
   each) takes about 100 ms at about 10 mA, 1027 µC. A report round (A2 only)
   takes 670 µC. With one report every 60 s the average is about 13 µA.
+- With the CPU idle during warm-up and the repetitions 20 ms apart, a report
+  round takes 534 µC: 390 µC for wake-up, warm-up at about 5.5 mA,
+  measurement and the first transmission, then 72 µC for each repetition.
+  The steady-state average with one report every 60 s is 9.0 µA. The probe's
+  zero offset differed between the two captures (about 1.9 µA before, about
+  0.05 µA after reconnecting it), so the sleep current is still unknown.
 
 **Not yet verified on hardware:**
 
