@@ -111,5 +111,11 @@ void zcl_sensor_boot(void) JOIN_FAR;
  * PM2 stops, is running), otherwise the symbols until the next sensor or LED
  * deadline (PM2 retains the LED pin). */
 uint32_t zcl_sensor_quiet(uint32_t now) JOIN_FAR;
+#if defined(FLOWER_GPD)
+/* Green Power variant: probe rail and excitation on/off, one measurement
+ * (battery, die temperature, illuminance, soil) into the values. */
+void zcl_flower_power(uint8_t on) JOIN_FAR;
+void zcl_flower_measure(void) JOIN_FAR;
+#endif
 
 #endif

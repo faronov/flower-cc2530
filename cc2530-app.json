@@ -1,7 +1,7 @@
 {
   "schema": "cc2530-app/1",
   "name": "flower",
-  "description": "DIYRuZ FlowerX soil sensor on faronov/flower v2 (E18-MS1-PCB): LEAN PM2 sleepy end device",
+  "description": "DIYRuZ FlowerX soil sensor on faronov/flower v2 (E18-MS1-PCB): Green Power Device PROTOTYPE (NoSecurity, unidirectional GPDFs; src/gpd_main.c replaces the stack main)",
   "defines": [
     "-DCC2530_PARENT_RECOVERY",
     "-DCC2530_ROUTER_JOIN",
@@ -12,11 +12,13 @@
     "-DCC2530_ZDO_DESCRIPTORS",
     "-DCC2530_APP_QUIET",
     "-DCC2530_TX_POWER",
-    "-DCC2530_APP_SETTINGS"
+    "-DCC2530_APP_SETTINGS",
+    "-DFLOWER_GPD"
   ],
   "include": ["include"],
   "units": {
     "zcl_sensor": "src/zcl_flower.c",
-    "lg_esl29_rev03": "boards/flower_v2.c"
+    "lg_esl29_rev03": "boards/flower_v2.c",
+    "join_smoke_main": "src/gpd_main.c"
   }
 }
