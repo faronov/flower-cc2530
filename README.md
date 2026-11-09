@@ -121,10 +121,15 @@ cd quirks && python -m pytest test_zha_quirk_diyruz_flowerx_gp.py   # zha, zha-q
   the device commissions as a GreenPower device with the quirk applied and
   reports temperature, soil moisture, illuminance, battery voltage and
   remaining.
+- Supply current (LP-XDS110ET EnergyTrace, 3.3 V, HWLab range 0 only and
+  not calibrated against a reference load): sleep about 1.75 µA, which is
+  close to the probe's zero offset. A commissioning round (E0 and A2, 3 times
+  each) takes about 100 ms at about 10 mA, 1027 µC. A report round (A2 only)
+  takes 670 µC. With one report every 60 s the average is about 13 µA.
 
 **Not yet verified on hardware:**
 
-- sleep current.
+- sleep current against a calibrated meter.
 
 ## License
 
