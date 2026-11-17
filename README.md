@@ -51,7 +51,7 @@ the prebuilt `mcs51-llvm-<version>-<revision>` toolchain from the
 [LLVM_DEVELOPMENT.md](https://github.com/faronov/cc2530-zigbee/blob/main/docs/LLVM_DEVELOPMENT.md)).
 `LLVM_SRC` is a checkout of the same revision; only `llvm/lib/Target/MCS51`
 (runtime, startup, linker script) is used, so a sparse checkout is enough.
-CI does exactly this.
+CI uses the release and builds LLVM only when the pinned revision has none.
 The image, its audit and its sealed receipt are written to `build/firmware/`
 (`firmware.hex`).
 
