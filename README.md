@@ -40,14 +40,18 @@ See [docs/FIRMWARE.md](docs/FIRMWARE.md) for details.
 git clone --recursive https://github.com/faronov/flower-cc2530.git
 cd flower-cc2530
 make test                                   # host tests (cc, ASan/UBSan)
-make firmware LLVM_TOOLS=<llvm-build>/bin LLVM_SRC=<llvm-project>
+make firmware LLVM_TOOLS=<toolchain>/bin LLVM_SRC=<llvm-project>
 ```
 
-`make firmware` needs Python 3 with `pyelftools`. It also needs the LLVM
-MCS-51 compiler built from
-[faronov/llvm-project](https://github.com/faronov/llvm-project) at the
-revision pinned in `cc2530-zigbee/tools/llvm/toolchain.json`; see the stack's
-[LLVM_DEVELOPMENT.md](https://github.com/faronov/cc2530-zigbee/blob/main/docs/LLVM_DEVELOPMENT.md).
+`make firmware` needs Python 3 with `pyelftools` and the LLVM MCS-51
+compiler at the revision pinned in `cc2530-zigbee/tools/llvm/toolchain.json`:
+the prebuilt `mcs51-llvm-<version>-<revision>` toolchain from the
+[faronov/llvm-project releases](https://github.com/faronov/llvm-project/releases)
+(or a build of that revision, see the stack's
+[LLVM_DEVELOPMENT.md](https://github.com/faronov/cc2530-zigbee/blob/main/docs/LLVM_DEVELOPMENT.md)).
+`LLVM_SRC` is a checkout of the same revision; only `llvm/lib/Target/MCS51`
+(runtime, startup, linker script) is used, so a sparse checkout is enough.
+CI uses the release and builds LLVM only when the pinned revision has none.
 The image, its audit and its sealed receipt are written to `build/firmware/`
 (`firmware.hex`).
 
